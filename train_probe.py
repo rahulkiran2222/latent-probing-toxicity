@@ -1,287 +1,246 @@
-import argparse
 from pathlib import Path
+import argparse
+import gc
+import json
 
 import joblib
 import numpy as np
-
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-)
-from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+import pandas as pd
+import torch
+from huggingface_hub import hf_hub_download
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.svm import LinearSVC
+from transformers import AutoModel, AutoTokenizer
 
 
-RANDOM_STATE = 42
+DATASET_ID = "ourafla/Mental-Health_Text-Classification_Dataset"
+DATA_FILE = "mental_heath_unbanlanced.csv"
+MODEL_ID = "google/gemma-2-2b"
+LAYER = 14
+MAX_LENGTH = 64
 
 
-def load_npz(path):
-    """
-    Expected format:
+def load_training_data(max_samples=None, seed=42):
+    path = hf_hub_download(
+        repo_id=DATASET_ID,
+        filename=DATA_FILE,
+        repo_type="dataset",
+    )
+    df = pd.read_csv(path)
+    df = df.dropna(subset=["text", "status"]).copy()
 
-        labels
-        layer_0
-        layer_1
-        layer_2
-        ...
+    # Competition task description says:
+    # 0 = normal/safe, 1 = mental-health distress signal.
+    df["label"] = (df["status"].str.lower() != "normal").astype(np.int64)
 
-    Each layer must have shape:
+    df["text"] = df["text"].astype(str).str.strip()
+    df = df[df["text"].str.len() > 0]
+    df = df.drop_duplicates(subset=["text"])
 
-        (number_of_examples, embedding_dimension)
-    """
-
-    data = np.load(path, allow_pickle=False)
-
-    if "labels" not in data.files:
-        raise ValueError("Missing 'labels' in NPZ file.")
-
-    labels = np.asarray(data["labels"]).astype(int)
-
-    layers = {
-        name: np.asarray(data[name])
-        for name in data.files
-        if name.startswith("layer_")
-    }
-
-    if not layers:
-        raise ValueError(
-            "No layer embeddings found. "
-            "Expected layer_0, layer_1, ..."
+    if max_samples is not None and max_samples < len(df):
+        # Keep the binary classes stratified when taking a faster subset.
+        _, df = train_test_split(
+            df,
+            test_size=max_samples,
+            stratify=df["label"],
+            random_state=seed,
         )
 
-    return layers, labels
+    return df.reset_index(drop=True)
 
 
-def build_probe(C=1.0):
-    return Pipeline(
-        [
-            (
-                "scaler",
-                StandardScaler(),
-            ),
-            (
-                "classifier",
-                LogisticRegression(
+def extract_layer14_embeddings(texts, batch_size=8):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    print(f"Loading {MODEL_ID} on {device} ...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModel.from_pretrained(
+        MODEL_ID,
+        torch_dtype=dtype,
+        output_hidden_states=True,
+    )
+    model.to(device)
+    model.eval()
+
+    chunks = []
+
+    for start in range(0, len(texts), batch_size):
+        batch_texts = texts[start:start + batch_size]
+
+        encoded = tokenizer(
+            batch_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=MAX_LENGTH,
+        )
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+
+        with torch.inference_mode():
+            outputs = model(**encoded, output_hidden_states=True)
+            hidden = outputs.hidden_states[LAYER]
+
+            # Mean over real (non-padding) tokens.
+            mask = encoded["attention_mask"].unsqueeze(-1).to(hidden.dtype)
+            pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+
+        chunks.append(pooled.float().cpu().numpy())
+
+        if (start // batch_size) % 50 == 0:
+            print(f"Embedded {min(start + batch_size, len(texts))}/{len(texts)}")
+
+    embeddings = np.concatenate(chunks, axis=0)
+
+    del model, tokenizer
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return embeddings
+
+
+def find_best_probe(X_train, y_train, X_val, y_val):
+    candidates = []
+
+    # Raw embeddings
+    for C in [0.03, 0.1, 0.3, 1.0, 3.0]:
+        for class_weight in [None, "balanced"]:
+            model = LinearSVC(
+                C=C,
+                class_weight=class_weight,
+                max_iter=10000,
+                dual="auto",
+                random_state=42,
+            )
+            model.fit(X_train, y_train)
+            pred = model.predict(X_val)
+            acc = accuracy_score(y_val, pred)
+            candidates.append((acc, f"raw | C={C} | weight={class_weight}", model))
+            print(f"{candidates[-1][1]:45s} accuracy={acc:.5f}")
+
+    # Standardized embeddings
+    for C in [0.03, 0.1, 0.3, 1.0, 3.0]:
+        for class_weight in [None, "balanced"]:
+            model = Pipeline([
+                ("scale", StandardScaler()),
+                ("svc", LinearSVC(
                     C=C,
-                    max_iter=3000,
-                    class_weight="balanced",
-                    solver="liblinear",
-                    random_state=RANDOM_STATE,
-                ),
-            ),
-        ]
-    )
+                    class_weight=class_weight,
+                    max_iter=10000,
+                    dual="auto",
+                    random_state=42,
+                )),
+            ])
+            model.fit(X_train, y_train)
+            pred = model.predict(X_val)
+            acc = accuracy_score(y_val, pred)
+            candidates.append((acc, f"scaled | C={C} | weight={class_weight}", model))
+            print(f"{candidates[-1][1]:45s} accuracy={acc:.5f}")
 
-
-def evaluate_layer(X, y):
-    X_train, X_valid, y_train, y_valid = train_test_split(
-        X,
-        y,
-        test_size=0.20,
-        random_state=RANDOM_STATE,
-        stratify=y,
-    )
-
-    model = build_probe()
-
-    model.fit(X_train, y_train)
-
-    predictions = model.predict(X_valid)
-
-    return {
-        "accuracy": accuracy_score(y_valid, predictions),
-        "precision": precision_score(
-            y_valid,
-            predictions,
-            zero_division=0,
-        ),
-        "recall": recall_score(
-            y_valid,
-            predictions,
-            zero_division=0,
-        ),
-        "f1": f1_score(
-            y_valid,
-            predictions,
-            zero_division=0,
-        ),
-    }
-
-
-def cross_validate_layer(X, y):
-    model = build_probe()
-
-    cv = StratifiedKFold(
-        n_splits=5,
-        shuffle=True,
-        random_state=RANDOM_STATE,
-    )
-
-    scores = cross_val_score(
-        model,
-        X,
-        y,
-        cv=cv,
-        scoring="accuracy",
-    )
-
-    return scores.mean(), scores.std()
-
-
-def train_final(X, y, layer_name, output_path):
-    model = build_probe()
-
-    model.fit(X, y)
-
-    payload = {
-        "model": model,
-        "layer": layer_name,
-        "task": "toxicity_detection",
-        "n_samples": len(y),
-        "embedding_dimension": X.shape[1],
-    }
-
-    joblib.dump(
-        payload,
-        output_path,
-    )
-
-    print(f"\nSaved trained probe:")
-    print(output_path)
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0]
 
 
 def main():
-
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--data",
-        required=True,
-        help="Path to NPZ containing embeddings and labels.",
-    )
-
-    parser.add_argument(
-        "--layer",
-        default=None,
-        help="Specific layer to train.",
-    )
-
-    parser.add_argument(
-        "--output",
-        default="trained_probe.joblib",
-    )
-
-    parser.add_argument(
-        "--sweep",
-        action="store_true",
-        help="Evaluate every available layer.",
-    )
-
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Use a stratified subset for a faster first run.")
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--reuse_embeddings", action="store_true")
     args = parser.parse_args()
 
-    layers, y = load_npz(args.data)
+    df = load_training_data(max_samples=args.max_samples)
+    print("\nDataset:")
+    print(df["status"].value_counts())
+    print(df["label"].value_counts())
 
-    print("\nDataset")
-    print("-------")
-    print(f"Samples: {len(y)}")
-    print(f"Classes: {np.unique(y)}")
-    print(f"Positive rate: {y.mean():.4f}")
-    print(f"Layers: {len(layers)}")
+    emb_path = Path("layer14_embeddings.npz")
 
-    # ---------------------------------------------------------
-    # Layer sweep
-    # ---------------------------------------------------------
-
-    if args.sweep:
-
-        results = []
-
-        print("\nLayer sweep")
-        print("-----------")
-
-        for layer_name in sorted(
-            layers,
-            key=lambda x: int(x.split("_")[1]),
-        ):
-
-            X = layers[layer_name]
-
-            print(
-                f"\n{layer_name}: "
-                f"shape={X.shape}"
-            )
-
-            metrics = evaluate_layer(X, y)
-
-            cv_mean, cv_std = cross_validate_layer(
-                X,
-                y,
-            )
-
-            result = {
-                "layer": layer_name,
-                **metrics,
-                "cv_accuracy": cv_mean,
-                "cv_std": cv_std,
-            }
-
-            results.append(result)
-
-            print(
-                f"accuracy={metrics['accuracy']:.4f} | "
-                f"f1={metrics['f1']:.4f} | "
-                f"CV={cv_mean:.4f} ± {cv_std:.4f}"
-            )
-
-        # Use CV accuracy as our main selection criterion.
-        best = max(
-            results,
-            key=lambda r: r["cv_accuracy"],
+    if args.reuse_embeddings and emb_path.exists():
+        data = np.load(emb_path)
+        X = data["X"]
+        y = data["y"]
+        print(f"Loaded cached embeddings: {X.shape}")
+    else:
+        X = extract_layer14_embeddings(
+            df["text"].tolist(),
+            batch_size=args.batch_size,
         )
+        y = df["label"].to_numpy(dtype=np.int64)
+        np.savez_compressed(emb_path, X=X, y=y)
+        print(f"Saved embeddings to {emb_path}")
 
-        print("\n==============================")
-        print("BEST LAYER")
-        print("==============================")
-
-        for key, value in best.items():
-            print(f"{key}: {value}")
-
-        best_layer = best["layer"]
-
-        train_final(
-            layers[best_layer],
-            y,
-            best_layer,
-            args.output,
-        )
-
-        return
-
-    # ---------------------------------------------------------
-    # Train selected layer
-    # ---------------------------------------------------------
-
-    if args.layer is None:
-        raise ValueError(
-            "Provide --layer or use --sweep."
-        )
-
-    if args.layer not in layers:
-        raise ValueError(
-            f"Unknown layer: {args.layer}\n"
-            f"Available: {sorted(layers)}"
-        )
-
-    train_final(
-        layers[args.layer],
-        y,
-        args.layer,
-        args.output,
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y,
+        test_size=0.20,
+        stratify=y,
+        random_state=42,
     )
+
+    print(f"\nTrain: {X_train.shape}")
+    print(f"Validation: {X_val.shape}")
+
+    best_acc, best_name, best_model = find_best_probe(
+        X_train, y_train, X_val, y_val
+    )
+
+    print(f"\nBEST VALIDATION MODEL: {best_name}")
+    print(f"Validation accuracy: {best_acc:.5f}")
+
+    # Retrain the selected model on all available training data.
+    # Reconstruct the same estimator from its name.
+    parts = best_name.split("|")
+    mode = parts[0].strip()
+    C = float(parts[1].split("=")[1].strip())
+    weight_text = parts[2].split("=")[1].strip()
+    class_weight = None if weight_text == "None" else "balanced"
+
+    if mode == "raw":
+        final_model = LinearSVC(
+            C=C,
+            class_weight=class_weight,
+            max_iter=10000,
+            dual="auto",
+            random_state=42,
+        )
+    else:
+        final_model = Pipeline([
+            ("scale", StandardScaler()),
+            ("svc", LinearSVC(
+                C=C,
+                class_weight=class_weight,
+                max_iter=10000,
+                dual="auto",
+                random_state=42,
+            )),
+        ])
+
+    final_model.fit(X, y)
+    joblib.dump(final_model, "trained_probe.joblib", compress=3)
+
+    report = {
+        "dataset": DATASET_ID,
+        "model": MODEL_ID,
+        "layer": LAYER,
+        "max_length": MAX_LENGTH,
+        "n_samples": int(len(y)),
+        "embedding_dim": int(X.shape[1]),
+        "best_validation_accuracy": float(best_acc),
+        "best_probe": best_name,
+    }
+    Path("probe_report.json").write_text(json.dumps(report, indent=2))
+
+    print("\nDONE.")
+    print("Created: trained_probe.joblib")
+    print("Created: probe_report.json")
+    print("\nUse trained_probe.joblib + classifier.py for the CodaBench ZIP.")
 
 
 if __name__ == "__main__":
