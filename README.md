@@ -1,73 +1,47 @@
 # Latent Probing for Toxicity Detection
 
-Research and competition repository for the TRI AI / CodaBench Latent Probe Challenge - Toxicity Detection.
+Flat-file starter implementation for the TRI AI / CodaBench competition.
 
-## Goal
+## Files
 
-Train lightweight linear probes on Gemma hidden-state representations to determine which layers contain linearly decodable toxicity information.
+- `train_probe.py` — trains a linear toxicity probe from layer embeddings.
+- `classifier.py` — local inference wrapper for a saved probe.
+- `requirements.txt` — Python dependencies.
 
-## Current pipeline
+## Important
 
-```text
-Gemma layer embeddings
-        |
-        v
-preprocessing / normalization
-        |
-        v
-linear probe (Logistic Regression)
-        |
-        v
-toxicity prediction
-        |
-        v
-F1 / precision / recall / accuracy
-```
+The CodaBench starter kit was not available in the participant page shown to us. Therefore `classifier.py` is intentionally written as a local inference wrapper and must be adapted to the official CodaBench evaluator API before final submission.
 
-## Repository status
+Do not submit this repository ZIP to CodaBench until the official starter-kit interface is confirmed.
 
-This repository is the **research/training scaffold**. The final CodaBench `classifier.py` wrapper will be adapted to the organizer's starter-kit API once the starter-kit format is available.
+## Expected embedding file
 
-Do not upload the current repository ZIP directly to CodaBench yet.
+The training script expects an NPZ containing:
 
-## Expected data
-
-The loader supports a simple `.npz` format:
-
-- `layer_0`, `layer_1`, ...: arrays shaped `(n_samples, hidden_dim)`
-- `labels`: binary labels shaped `(n_samples,)`
+- `labels`: binary labels, shape `(N,)`
+- `layer_0`, `layer_1`, ...: hidden-state embeddings, shape `(N, D)`
 
 Example:
 
 ```python
+import numpy as np
 np.savez(
-    "data/embeddings.npz",
+    "embeddings.npz",
+    labels=labels,
     layer_0=layer0,
     layer_1=layer1,
-    labels=labels,
 )
 ```
 
-If the official starter kit uses another format, only the data-loading adapter should need to change.
-
-## Quick start
+## Train
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
-python -m src.train --data data/embeddings.npz --layer layer_0
-python -m src.evaluate --model models/probe_layer_0.joblib --data data/embeddings.npz --layer layer_0
+python train_probe.py --data embeddings.npz --layer layer_0 --output probe.joblib
 ```
 
-## Research questions
+## Sweep layers
 
-1. Which Gemma layer gives the strongest toxicity signal?
-2. How early is toxicity linearly decodable?
-3. Does normalization improve probe performance?
-4. Does a small linear probe remain effective under distribution shift?
-5. How much performance can we obtain without fine-tuning Gemma?
-
-## Important
-
-The competition evaluator is the source of truth for the final submission format. The final submission should contain only the files required by CodaBench.
+```bash
+python train_probe.py --data embeddings.npz --sweep
+```
