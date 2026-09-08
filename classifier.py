@@ -1,35 +1,26 @@
-"""
-Local inference wrapper for a trained latent toxicity probe.
-
-This is deliberately independent of the CodaBench API because the official
-starter kit/evaluator interface has not yet been provided.
-
-Before CodaBench submission, adapt the `predict()` function to the exact
-interface required by the official starter kit.
-"""
-
-import joblib
 import numpy as np
 
 
-class ToxicityClassifier:
-    def __init__(self, probe_path):
-        payload = joblib.load(probe_path)
-        self.model = payload["model"]
-        self.layer = payload.get("layer")
+class Classifier:
+    """
+    Basic starting-kit example.
 
-    def predict(self, embeddings):
-        """
-        embeddings: numpy array of shape (N, hidden_dim)
-        returns: numpy array of binary predictions
-        """
-        X = np.asarray(embeddings)
-        return self.model.predict(X)
+    This does NOT do any real learning -- it always predicts class 0,
+    regardless of input. It exists purely to show the required interface
+    (a class named Classifier with a predict method) so you know what
+    your own submission needs to look like.
 
-    def predict_proba(self, embeddings):
-        X = np.asarray(embeddings)
-        return self.model.predict_proba(X)[:, 1]
+    Replace this with your own trained probe:
+      1. Extract Gemma embeddings for your training data.
+      2. Train a classifier (e.g. logistic regression) on those embeddings.
+      3. Save your trained model (e.g. with joblib.dump).
+      4. Load it here in __init__, and use it in predict() instead of the
+         constant-zero placeholder below.
+    """
 
+    def __init__(self):
+        pass
 
-def load_classifier(probe_path):
-    return ToxicityClassifier(probe_path)
+    def predict(self, X):
+        X = np.asarray(X)
+        return np.zeros(X.shape[0], dtype=int)
