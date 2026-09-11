@@ -61,7 +61,6 @@ This makes the experiment a form of **linear probing**.
 
 ## 🧩 Core Architecture
 
-flowchart LR
 
     A["📝 Input Text"] --> B["🤖 Gemma-2-2B"]
 
@@ -90,7 +89,6 @@ flowchart LR
     style H stroke-width:2px
     style I stroke-width:2px
     style J stroke-width:2px
-```
 
 ### Why Layer 14?
 
@@ -100,7 +98,6 @@ The model has hidden-state indices `0–26`, with Layer 14 providing the represe
 
 The probe therefore operates on:
 
-```text
 Gemma-2-2B
      │
      ├── Layer 0
@@ -109,7 +106,6 @@ Gemma-2-2B
      ├── Layer 14  ← selected representation
      ├── ...
      └── Layer 26
-```
 
 ---
 
@@ -123,7 +119,6 @@ A **probe** asks:
 
 For this project:
 
-```text
 Text
   ↓
 Frozen Gemma
@@ -133,7 +128,6 @@ Intermediate Representation
 Simple Linear Classifier
   ↓
 Prediction
-```
 
 The classifier itself is intentionally simple.
 
@@ -155,9 +149,7 @@ Input text is tokenized using Gemma's tokenizer.
 
 The maximum sequence length is restricted to:
 
-```text
 64 tokens
-```
 
 This matches the competition specification.
 
@@ -169,9 +161,7 @@ Gemma is executed with hidden states enabled.
 
 The representation from Layer 14 is selected:
 
-```python
 hidden_states[14]
-```
 
 The language model is **not fine-tuned** during probe training.
 
@@ -183,14 +173,12 @@ Instead of using only the final token, the representation is averaged across the
 
 Conceptually:
 
-```text
 Token 1 ─┐
 Token 2  │
 Token 3  │
 Token 4  ├──→ Mean → Layer-14 embedding
 ...      │
 Token N ─┘
-```
 
 Padding positions are excluded from the mean.
 
@@ -204,7 +192,7 @@ The resulting embeddings are passed to a `LinearSVC`.
 
 The probe searches for a linear decision boundary:
 
-```text
+
              Class 1
                 ●
              ●  ●
@@ -213,7 +201,6 @@ The probe searches for a linear decision boundary:
       ●
    ●     ●
  Class 0
-```
 
 The language model remains frozen.
 
@@ -243,7 +230,7 @@ Only the classifier learns.
 
 The repository contains a complete local training pipeline.
 
-```text
+
                     TRAINING
                        │
                        ▼
@@ -279,13 +266,13 @@ The repository contains a complete local training pipeline.
                       │
                       ▼
              trained_probe.joblib
-```
+
 
 ---
 
 # 📁 Repository Structure
 
-```text
+
 latent-probing-toxicity/
 │
 ├── README.md
@@ -301,7 +288,6 @@ latent-probing-toxicity/
 │   └── Python dependencies
 │
 └── LICENSE
-```
 
 ---
 
@@ -309,18 +295,15 @@ latent-probing-toxicity/
 
 ## 1. Clone the repository
 
-```bash
 git clone https://github.com/rahulkiran2222/latent-probing-toxicity.git
 cd latent-probing-toxicity
-```
+
 
 ---
 
 ## 2. Install dependencies
 
-```bash
 pip install -r requirements.txt
-```
 
 ---
 
@@ -330,11 +313,10 @@ Gemma-2-2B requires access to the model repository.
 
 Make sure your Hugging Face account has access to the model and authenticate locally:
 
-```python
+
 from huggingface_hub import login
 
 login()
-```
 
 ---
 
@@ -342,13 +324,11 @@ login()
 
 For a quick experiment:
 
-```bash
 python train_probe.py --max_samples 12000 --batch_size 8
-```
+
 
 This performs:
 
-```text
 Dataset
    ↓
 Tokenization
@@ -362,15 +342,14 @@ Linear probe search
 Validation
    ↓
 trained_probe.joblib
-```
+
 
 ---
 
 ## 5. Train using the complete available corpus
 
-```bash
 python train_probe.py --batch_size 8
-```
+
 
 Training can be substantially faster on a CUDA-enabled GPU.
 
@@ -380,9 +359,8 @@ Training can be substantially faster on a CUDA-enabled GPU.
 
 If embedding extraction has already completed and the process was interrupted:
 
-```bash
 python train_probe.py --reuse_embeddings --batch_size 8
-```
+
 
 This avoids repeating the expensive Gemma inference stage.
 
@@ -394,26 +372,22 @@ The competition required a lightweight inference package rather than training on
 
 The final submission contains:
 
-```text
 submission.zip
 │
 ├── classifier.py
 └── trained_probe.joblib
-```
+
 
 Both files must be located at the **root of the ZIP archive**.
 
 The platform loads:
 
-```python
 Classifier()
-```
 
 and calls:
 
-```python
+
 predict(X)
-```
 
 The submitted classifier then loads the serialized probe and generates predictions.
 
@@ -437,7 +411,6 @@ This strongly suggests that the external training distribution differed substant
 
 In other words:
 
-```text
 Strong local validation
           │
           ▼
@@ -449,7 +422,6 @@ Hidden evaluation
           │
           ▼
        ~53%
-```
 
 This is not simply a failure of the classifier.
 
@@ -465,7 +437,7 @@ As a result, the local training pipeline used an externally available mental-hea
 
 The labels were mapped as:
 
-```text
+
 Normal
   ↓
 0
@@ -473,7 +445,7 @@ Normal
 Distress-related classes
   ↓
 1
-```
+
 
 This allowed us to build and test the complete latent-probing pipeline, but it introduced a major limitation:
 
@@ -493,7 +465,7 @@ This project deliberately takes a different approach.
 
 ### Conventional fine-tuning
 
-```text
+
 Text
  ↓
 LLM
@@ -501,11 +473,11 @@ LLM
 Update millions/billions of parameters
  ↓
 Prediction
-```
+
 
 ### Latent probing
 
-```text
+
 Text
  ↓
 Frozen LLM
@@ -515,7 +487,7 @@ Extract internal representation
 Train tiny linear classifier
  ↓
 Prediction
-```
+
 
 The second approach lets us investigate the information already encoded inside the model.
 
@@ -592,21 +564,20 @@ The experiment therefore asks whether the information is already encoded rather 
 
 The main experiment is implemented in:
 
-```text
+
 train_probe.py
-```
+
 
 The CodaBench inference interface is implemented in:
 
-```text
 classifier.py
-```
+
 
 The environment is specified in:
 
-```text
+
 requirements.txt
-```
+
 
 For reproducible experiments, it is recommended to use the same:
 
@@ -624,11 +595,10 @@ For reproducible experiments, it is recommended to use the same:
 
 The training pipeline can generate artifacts such as:
 
-```text
+
 trained_probe.joblib
 probe_report.json
 layer14_embeddings.npz
-```
 
 ### `trained_probe.joblib`
 
@@ -690,7 +660,7 @@ we can ask:
 
 Conceptually:
 
-```text
+
 Layer 0   ──→ Probe ──→ Accuracy
 Layer 1   ──→ Probe ──→ Accuracy
 Layer 2   ──→ Probe ──→ Accuracy
@@ -698,7 +668,7 @@ Layer 2   ──→ Probe ──→ Accuracy
 Layer 14  ──→ Probe ──→ Accuracy ⭐
    ⋮
 Layer 26  ──→ Probe ──→ Accuracy
-```
+
 
 This turns the project from a simple classifier into a potential **representation-analysis experiment**.
 
@@ -712,16 +682,16 @@ This repository was developed as part of the:
 
 Final recorded result:
 
-```text
+
 Leaderboard position: 8th
 Official accuracy:    ~0.53
-```
+
 
 The competition result is documented here primarily as an empirical evaluation of the complete pipeline.
 
 The stronger contribution of this repository is the reproducible workflow for:
 
-```text
+
 LLM
  ↓
 Intermediate Representation
@@ -731,13 +701,12 @@ Latent Embedding
 Linear Probe
  ↓
 Evaluation
-```
+
 
 ---
 
 # 📚 Technical Summary
 
-```text
 Model
     Gemma-2-2B
 
@@ -770,7 +739,7 @@ Official hidden evaluation
 
 Leaderboard position
     8th
-```
+
 
 ---
 
