@@ -61,7 +61,6 @@ This makes the experiment a form of **linear probing**.
 
 ## 🧩 Core Architecture
 
-```mermaid
 flowchart LR
 
     A["📝 Input Text"] --> B["🤖 Gemma-2-2B"]
