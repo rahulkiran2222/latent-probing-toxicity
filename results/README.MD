@@ -1,6 +1,3 @@
-Absolutely. Here is the **complete copy-paste-ready `results/README.md`**. No extra explanation needed—just create `results/README.md` and paste this:
-
-`markdown
 # 📊 Results & Evaluation
 
 This directory documents the experimental results obtained from the latent probing pipeline and the final CodaBench evaluation.
@@ -264,4 +261,3 @@ This makes the experiment useful not only as a classification task, but also as 
 </div>
 
 
-This is the version I recommend keeping as the **final `results/README.md`**.
